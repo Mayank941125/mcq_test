@@ -148,4 +148,4 @@ if st.session_state.submitted:
 # Score Display
 # --------------------------------------------------
 st.markdown(f"### 🏆 Score: {st.session_state.score}")
-``
+
