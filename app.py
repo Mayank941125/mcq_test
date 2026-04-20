@@ -16,7 +16,7 @@ PROJECT_ID = st.secrets["WATSONX_PROJECT_ID"]
 ENDPOINT = st.secrets["WATSONX_ENDPOINT"]
 
 # --------------------------------------------------
-# IAM Token handling (cached)
+# IAM token (cached for performance)
 # --------------------------------------------------
 @st.cache_data(ttl=3500)
 def get_iam_token(api_key):
@@ -40,7 +40,7 @@ def safe_parse_json(text):
         start = text.find("{")
         end = text.rfind("}") + 1
         if start == -1 or end == -1:
-            raise ValueError("No JSON found in output")
+            raise ValueError("No JSON found")
         return json.loads(text[start:end])
 
 # --------------------------------------------------
@@ -50,17 +50,46 @@ def is_valid_mcq(mcq):
     return (
         isinstance(mcq, dict)
         and "question" in mcq
-        and "options" in mcq
-        and isinstance(mcq["options"], list)
+        and isinstance(mcq.get("options"), list)
         and len(mcq["options"]) == 4
-        and "correct_index" in mcq
-        and isinstance(mcq["correct_index"], int)
+        and isinstance(mcq.get("correct_index"), int)
         and 0 <= mcq["correct_index"] < 4
         and "explanation" in mcq
     )
 
 # --------------------------------------------------
-# Watsonx.ai MCQ Generator (with retry + fallback)
+# Build dynamic prompt (prevents repetition)
+# --------------------------------------------------
+def build_prompt(previous_questions):
+    recent_questions = "\n".join(previous_questions[-5:]) or "None"
+
+    return f"""
+You are generating quiz questions.
+
+Generate ONE NEW multiple-choice question on Accounts Payable best practices.
+
+IMPORTANT:
+- Do NOT repeat any of these previous questions:
+{recent_questions}
+
+Rules:
+- Exactly 4 options
+- Only ONE correct answer
+- Output ONLY valid JSON
+- No markdown
+- No extra text
+
+JSON format:
+{{
+  "question": "string",
+  "options": ["string","string","string","string"],
+  "correct_index": 0,
+  "explanation": "string"
+}}
+"""
+
+# --------------------------------------------------
+# Watsonx.ai MCQ generator (retry + fallback)
 # --------------------------------------------------
 def get_mcq_from_watsonx(max_retries=3):
 
@@ -81,31 +110,14 @@ def get_mcq_from_watsonx(max_retries=3):
             token = get_iam_token(API_KEY)
             url = f"{ENDPOINT}/ml/v1/text/generation?version=2023-05-29"
 
-            prompt = """
-Generate ONE multiple-choice question on Accounts Payable best practices.
-
-STRICT RULES:
-- Exactly 4 options
-- Only ONE correct answer
-- Output ONLY valid JSON
-- No markdown
-- No extra text
-
-JSON:
-{
-  "question": "string",
-  "options": ["string","string","string","string"],
-  "correct_index": 0,
-  "explanation": "string"
-}
-"""
+            prompt = build_prompt(st.session_state.asked_questions)
 
             payload = {
                 "model_id": "ibm/granite-8b-code-instruct",
                 "project_id": PROJECT_ID,
                 "input": prompt,
                 "parameters": {
-                    "temperature": 0.3,
+                    "temperature": 0.7,  # ✅ allows variation
                     "max_new_tokens": 300
                 }
             }
@@ -118,7 +130,7 @@ JSON:
             r = requests.post(url, headers=headers, json=payload, timeout=30)
 
             if r.status_code != 200:
-                raise RuntimeError(f"watsonx status {r.status_code}")
+                raise RuntimeError(f"watsonx error {r.status_code}")
 
             raw_text = r.json()["results"][0]["generated_text"]
             mcq = safe_parse_json(raw_text)
@@ -126,16 +138,22 @@ JSON:
             if not is_valid_mcq(mcq):
                 raise ValueError("Invalid MCQ structure")
 
+            # ✅ Track questions to prevent repetition
+            st.session_state.asked_questions.append(mcq["question"])
+
             return mcq
 
         except Exception as e:
-            print(f"MCQ generation attempt {attempt+1} failed:", e)
+            print(f"Attempt {attempt + 1} failed:", e)
 
     return fallback_mcq
 
 # --------------------------------------------------
-# Session state
+# Session state initialization
 # --------------------------------------------------
+if "asked_questions" not in st.session_state:
+    st.session_state.asked_questions = []
+
 if "mcq" not in st.session_state:
     st.session_state.mcq = get_mcq_from_watsonx()
 
