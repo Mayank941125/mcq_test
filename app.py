@@ -1,100 +1,114 @@
 import streamlit as st
+import requests
+import json
 
-# -------------------------------
-# Page configuration
-# -------------------------------
-st.set_page_config(
-    page_title="MCQ Quiz",
-    layout="centered"
-)
+# ------------------------------------
+# Page setup
+# ------------------------------------
+st.set_page_config(page_title="AI MCQ Quiz", layout="centered")
+st.title("📘 AI‑Powered MCQ Quiz")
 
-st.title("📘 MCQ Quiz Demo")
+# ------------------------------------
+# Load secrets
+# ------------------------------------
+API_KEY = st.secrets["WATSONX_API_KEY"]
+PROJECT_ID = st.secrets["WATSONX_PROJECT_ID"]
+ENDPOINT = st.secrets["WATSONX_ENDPOINT"]
 
-# -------------------------------
-# Sample MCQs (static for now)
-# -------------------------------
-MCQS = [
-    {
-        "question": "What is 2 + 2?",
-        "options": ["1", "2", "3", "4"],
-        "correct_index": 3,
-        "explanation": "2 + 2 equals 4."
-    },
-    {
-        "question": "Which approval is required for invoices above ₹50,000?",
-        "options": [
-            "Single approval",
-            "Two-level approval",
-            "Finance approval only",
-            "No approval required"
-        ],
-        "correct_index": 1,
-        "explanation": "Invoices above ₹50,000 require two-level approval."
+# ------------------------------------
+# Watsonx.ai call
+# ------------------------------------
+def get_mcq_from_watsonx():
+    url = f"{ENDPOINT}/ml/v1/text/generation?version=2023-05-29"
+
+    prompt = """
+Generate ONE multiple choice question on Accounts Payable best practices.
+
+Rules:
+- Exactly 4 options
+- Only one correct answer
+- Output ONLY valid JSON
+- Do NOT add markdown or text outside JSON
+
+JSON format:
+{
+  "question": "...",
+  "options": ["...", "...", "...", "..."],
+  "correct_index": 0,
+  "explanation": "..."
+}
+"""
+
+    payload = {
+        "model_id": "ibm/granite-8b-code-instruct",
+        "project_id": PROJECT_ID,
+        "input": prompt,
+        "parameters": {
+            "temperature": 0.4,
+            "max_new_tokens": 300
+        }
     }
-]
 
-# -------------------------------
-# Initialize session state
-# -------------------------------
-if "current_q" not in st.session_state:
-    st.session_state.current_q = 0
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    response = requests.post(url, headers=headers, json=payload)
+    response.raise_for_status()
+
+    text_output = response.json()["results"][0]["generated_text"]
+    return json.loads(text_output)
+
+# ------------------------------------
+# Session state
+# ------------------------------------
+if "mcq" not in st.session_state:
+    st.session_state.mcq = get_mcq_from_watsonx()
+
+if "submitted" not in st.session_state:
+    st.session_state.submitted = False
 
 if "score" not in st.session_state:
     st.session_state.score = 0
 
-if "answered" not in st.session_state:
-    st.session_state.answered = False
+# ------------------------------------
+# Display MCQ
+# ------------------------------------
+mcq = st.session_state.mcq
 
-# -------------------------------
-# Load current question
-# -------------------------------
-mcq = MCQS[st.session_state.current_q]
-
-st.subheader(f"Question {st.session_state.current_q + 1}")
+st.subheader("Question")
 st.write(mcq["question"])
 
-selected_option = st.radio(
-    "Select one option:",
-    mcq["options"],
+selected_index = st.radio(
+    "Select an option:",
+    range(len(mcq["options"])),
+    format_func=lambda x: mcq["options"][x],
     index=None,
-    disabled=st.session_state.answered
+    disabled=st.session_state.submitted
 )
 
-# -------------------------------
-# Submit button
-# -------------------------------
-if st.button("✅ Submit", disabled=st.session_state.answered):
-    st.session_state.answered = True
+# ------------------------------------
+# Submit logic
+# ------------------------------------
+if st.button("✅ Submit", disabled=st.session_state.submitted):
+    st.session_state.submitted = True
 
-    if selected_option is not None:
-        selected_index = mcq["options"].index(selected_option)
-
-        if selected_index == mcq["correct_index"]:
-            st.session_state.score += 1
-            st.success("Correct ✅")
-        else:
-            st.error("Incorrect ❌")
-
-        st.info(f"Explanation: {mcq['explanation']}")
+    if selected_index == mcq["correct_index"]:
+        st.session_state.score += 1
+        st.success("Correct ✅")
     else:
-        st.warning("Please select an option.")
+        st.error("Incorrect ❌")
 
-# -------------------------------
-# Next question / Finish
-# -------------------------------
-if st.session_state.answered:
-    if st.session_state.current_q < len(MCQS) - 1:
-        if st.button("➡️ Next Question"):
-            st.session_state.current_q += 1
-            st.session_state.answered = False
-            st.rerun()
-    else:
-        st.success("🎉 Quiz Completed!")
-        st.write(f"**Your Score:** {st.session_state.score} / {len(MCQS)}")
+    st.info(f"Explanation: {mcq['explanation']}")
 
-        if st.button("🔄 Restart Quiz"):
-            st.session_state.current_q = 0
-            st.session_state.score = 0
-            st.session_state.answered = False
-            st.rerun()
+# ------------------------------------
+# Next question
+# ------------------------------------
+if st.session_state.submitted:
+    if st.button("➡️ Next Question"):
+        st.session_state.mcq = get_mcq_from_watsonx()
+        st.session_state.submitted = False
+        st.rerun()
 
+st.markdown(f"**Score:** {st.session_state.score}")
