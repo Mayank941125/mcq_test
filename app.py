@@ -5,28 +5,22 @@ import json
 # --------------------------------------------------
 # Page configuration
 # --------------------------------------------------
-st.set_page_config(
-    page_title="AI MCQ Quiz",
-    layout="centered"
-)
-
+st.set_page_config(page_title="AI MCQ Quiz", layout="centered")
 st.title("📘 AI‑Powered MCQ Quiz")
 
 # --------------------------------------------------
-# Load secrets (from Streamlit Cloud → Secrets)
+# Load secrets (Streamlit Cloud → App → Settings → Secrets)
 # --------------------------------------------------
 API_KEY = st.secrets["WATSONX_API_KEY"]
 PROJECT_ID = st.secrets["WATSONX_PROJECT_ID"]
 ENDPOINT = st.secrets["WATSONX_ENDPOINT"]
 
 # --------------------------------------------------
-# Get IAM access token (REQUIRED for watsonx.ai)
+# IAM Token (required for watsonx.ai)
 # --------------------------------------------------
 def get_iam_token(api_key):
     iam_url = "https://iam.cloud.ibm.com/identity/token"
-    headers = {
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
     data = {
         "apikey": api_key,
         "grant_type": "urn:ibm:params:oauth:grant-type:apikey"
@@ -37,7 +31,22 @@ def get_iam_token(api_key):
     return response.json()["access_token"]
 
 # --------------------------------------------------
-# Call watsonx.ai to generate an MCQ
+# SAFE JSON PARSER (fixes JSONDecodeError)
+# --------------------------------------------------
+def safe_parse_json(text):
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+
+        if start == -1 or end == -1:
+            raise ValueError("No JSON found in model output")
+
+        return json.loads(text[start:end])
+
+# --------------------------------------------------
+# Watsonx.ai MCQ generator
 # --------------------------------------------------
 def get_mcq_from_watsonx():
     iam_token = get_iam_token(API_KEY)
@@ -45,29 +54,30 @@ def get_mcq_from_watsonx():
     url = f"{ENDPOINT}/ml/v1/text/generation?version=2023-05-29"
 
     prompt = """
-Generate ONE multiple choice question on Accounts Payable best practices.
+You must generate ONE multiple‑choice question on Accounts Payable best practices.
 
-Rules:
+STRICT RULES:
 - Exactly 4 options
-- Only ONE correct answer
+- Only ONE option is correct
 - Output ONLY valid JSON
-- Do NOT include markdown or extra text
+- No markdown
+- No commentary
 
-JSON format:
+JSON schema:
 {
   "question": "string",
-  "options": ["option1", "option2", "option3", "option4"],
+  "options": ["string", "string", "string", "string"],
   "correct_index": 0,
   "explanation": "string"
 }
 """
 
     payload = {
-        "model_id": "ibm/granite-8b-code-instruct",
+        "model_id": "ibm/granite-13b-instruct-v2",
         "project_id": PROJECT_ID,
         "input": prompt,
         "parameters": {
-            "temperature": 0.4,
+            "temperature": 0.3,
             "max_new_tokens": 300
         }
     }
@@ -81,9 +91,7 @@ JSON format:
     response.raise_for_status()
 
     generated_text = response.json()["results"][0]["generated_text"]
-
-    # Convert model output (string) to JSON
-    return json.loads(generated_text)
+    return safe_parse_json(generated_text)
 
 # --------------------------------------------------
 # Session state initialization
@@ -114,7 +122,7 @@ selected_index = st.radio(
 )
 
 # --------------------------------------------------
-# Submit logic
+# Submit Answer
 # --------------------------------------------------
 if st.button("✅ Submit", disabled=st.session_state.submitted):
     st.session_state.submitted = True
@@ -125,3 +133,19 @@ if st.button("✅ Submit", disabled=st.session_state.submitted):
     else:
         st.error("Incorrect ❌")
 
+    st.info(f"Explanation: {mcq['explanation']}")
+
+# --------------------------------------------------
+# Next Question
+# --------------------------------------------------
+if st.session_state.submitted:
+    if st.button("➡️ Next Question"):
+        st.session_state.mcq = get_mcq_from_watsonx()
+        st.session_state.submitted = False
+        st.rerun()
+
+# --------------------------------------------------
+# Score Display
+# --------------------------------------------------
+st.markdown(f"### 🏆 Score: {st.session_state.score}")
+``
