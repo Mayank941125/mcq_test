@@ -73,7 +73,7 @@ JSON schema:
 """
 
     payload = {
-        "model_id": "ibm/granite-13b-instruct-v2",
+        "model_id": "ibm/granite-8b-code-instruct",
         "project_id": PROJECT_ID,
         "input": prompt,
         "parameters": {
